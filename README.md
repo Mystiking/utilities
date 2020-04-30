@@ -2,7 +2,7 @@
 
 A number of utilities needed for working with meshes, polygons, etc.
 This includes:
-    - Triangle-Triangle intersection testing
-    - Mesh intersection testing
-    - Sutherland Hodgman clipping (for triangles)
-    - Jarvis march for triangles
+    1. Triangle-Triangle intersection testing
+    2. Mesh intersection testing
+    3. Sutherland Hodgman clipping (for triangles)
+    4. Jarvis march for triangles
