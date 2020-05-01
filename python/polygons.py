@@ -1,7 +1,7 @@
 import numpy as np
 import dmsh
-import meshing
-import csg2d as csg
+import utilities.python.meshing
+import utilities.python.csg2d as csg
 
 '''
 Computes the area of a polygon.
@@ -70,6 +70,7 @@ def compute_random_points(proxy, num_samples=1e3):
         random_samples = np.random.rand(int(num_samples), 2) * s
         points = np.dot(random_samples, R)
         return points - np.mean(points, axis=0) + np.array([cx, cy])
+
 
 '''
 Computes uniformly spaced points within a proxy.
@@ -260,6 +261,59 @@ def refinePoly(poly, l):
                 polynew = np.array([a]) 
             polynew = np.append(polynew, np.array([b]), axis=0)
     return polynew
+
+
+'''
+@arg p: A polygon defined as a set of points.
+@arg q: A query point
+@return: The signed distance from q to the polygon p
+'''
+def sdf(p, q):
+    N = p.shape[0]
+    d = np.inf
+
+    # Compute distance to closest surface point
+    for i in range(N-1):
+        a = p[i, :]    # Point on the surface of polygon p
+        b = p[i+1, :]  # Adjacent point on the surface of polygon p
+        ba = b - a     # Vector from a to b
+        bal = np.linalg.norm(ba) # Length of ba vector
+        if bal == 0:
+            continue
+        ban = ba / bal # Normal of the vector from a to b
+        qa = q - a     # The vector from the query point to a
+        alpha = np.dot(qa, ban) / bal
+        if alpha < 0:
+            da = np.linalg.norm(q-a)
+            if da < d:
+                d = da
+        elif alpha > 1:
+            db = np.linalg.norm(q-b)
+            if db < d:
+                d = db
+        else:
+            banp = np.array([-ban[1], ban[0]])
+            dp = abs(np.dot(qa, banp))
+            if dp < d:
+                d = dp
+    # Compute winding number to set the sign
+    wn = 0
+    for i in range(N-1):
+        a = p[i, :]    # Point on the surface of polygon p
+        b = p[i+1, :]  # Adjacent point on the surface of polygon p
+        if a[1] <= q[1]:
+            if b[1] > q[1]:
+                if is_left(a, b, q):
+                    wn = wn + 1
+        else:
+            if b[1] <= q[1]:
+                if not is_left(a, b, q):
+                    wn = wn -1
+    if wn < -0.5:
+        d = -d
+    elif wn > 0.5:
+        d = -d
+    return d
 
 '''
 An implementation of the Sutherland-Hodgman algorithm (https://en.wikipedia.org/wiki/Sutherland%E2%80%93Hodgman_algorithm)

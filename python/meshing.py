@@ -1,5 +1,5 @@
 import numpy as np
-import polygons
+import utilities.python.polygons
 
 
 '''
