@@ -1,6 +1,7 @@
 import numpy as np
 import dmsh
 import meshing
+import csg2d as csg
 
 '''
 Computes the area of a polygon.
@@ -15,6 +16,99 @@ def compute_polygon_area(poly):
         A += a[0] * b[1] - b[0] * a[1]
     A = abs(A / 2.0)
     return A
+
+'''
+Computes normals of a polygon.
+'''
+def compute_polygon_normals(poly):
+    normals = []
+    theta = -np.pi/2
+    R = np.array([[np.cos(theta), -np.sin(theta)],
+                  [np.sin(theta), np.cos(theta)]])
+    for i in range(poly.shape[0] - 1):
+        a = poly[i,:]
+        b = poly[i+1,:]
+        n = np.dot((b - a) / np.linalg.norm((b - a)), R)
+        normals.append(n)
+    return normals
+
+'''
+Computes the area of a proxy.
+'''
+def compute_proxy_area(proxy):
+    if len(proxy) == 3:
+        return proxy[0]**2 * np.pi
+    else:
+        return proxy[0] * proxy[1]
+
+'''
+Compute randomly distributed points within a proxy.
+'''
+def compute_random_points(proxy, num_samples=1e3):
+    if len(proxy) == 3:
+        r = proxy[0] * np.sqrt(np.random.rand(int(num_samples)))
+        theta = np.random.rand(int(num_samples)) * 2.0 * np.pi
+        points = np.zeros((int(num_samples), 2))
+        points[:, 0] = proxy[1] + r * np.cos(theta)
+        points[:, 1] = proxy[2] + r * np.sin(theta)
+        return points
+    else:
+        sx = proxy[0]
+        sy = proxy[1]
+        
+        cx = proxy[2]
+        cy = proxy[3]
+        
+        theta = proxy[4]
+        
+        R = np.array([[np.cos(theta), -np.sin(theta)],
+                      [np.sin(theta), np.cos(theta)]])
+        
+        min_coord = np.array([cx - sx * 0.5, cy - sy * 0.5])
+        max_coord = np.array([cx + sx * 0.5, cy + sy * 0.5])
+        s = max_coord - min_coord
+        random_samples = np.random.rand(int(num_samples), 2) * s
+        points = np.dot(random_samples, R)
+        return points - np.mean(points, axis=0) + np.array([cx, cy])
+
+'''
+Computes uniformly spaced points within a proxy.
+'''
+def compute_uniformly_sampled_points(proxy, min_coord, max_coord, spacing = .5, grid_points = None ):
+    if len(proxy) == 3:
+        num_rows = int(np.ceil((max_coord[0] - min_coord[0]) /  spacing))
+        num_cols  = int(np.ceil((max_coord[1] - min_coord[1]) /  spacing))
+        
+        if grid_points is None:
+            grid_points = compute_grid_points(min_coord, max_coord, spacing)
+        
+        points = grid_points.reshape((num_rows, num_cols, 2))
+        
+        X = np.linspace(min_coord[0], max_coord[0], num_rows)
+        Y = np.linspace(min_coord[1], max_coord[1], num_cols)
+
+        Xv, Yv = np.meshgrid(X, Y)
+
+        circle_mask = np.sqrt((Xv - spacing / 2. - proxy[1])**2 + (Yv-proxy[2])**2) <= proxy[0]
+        
+        return points[circle_mask.T]
+    else:
+        num_rows = int(np.ceil((max_coord[0] - min_coord[0]) /  spacing))
+        num_cols  = int(np.ceil((max_coord[1] - min_coord[1]) /  spacing))
+        
+        if grid_points is None:
+            grid_points = compute_grid_points(min_coord, max_coord, spacing)
+        
+        min_idx = np.floor((get_proxy_min_coord(proxy) + np.array([spacing, spacing]) - grid_points[0]) / spacing)
+        max_idx = np.floor((get_proxy_max_coord(proxy) + np.array([spacing, spacing]) - grid_points[0]) / spacing)
+        
+        points = grid_points.reshape((num_rows, num_cols, 2))
+        points = points[int(min_idx[0]):int(max_idx[0]), int(min_idx[1]):int(max_idx[1])]
+        points = points.reshape((points.shape[0] * points.shape[1], 2))
+        theta = proxy[4]
+        R = np.array([[np.cos(theta), -np.sin(theta)],
+                      [np.sin(theta), np.cos(theta)]])
+        return np.dot(points - np.array([proxy[2], proxy[3]]), R) + np.array([proxy[2], proxy[3]])
 
 '''
 Finds the intersection point between lines (p1, p2) and (u1, u2).
@@ -75,12 +169,41 @@ def get_minimal_proxy_points(proxy):
         return pbox
 
 '''
+Returns the min coordinate of a proxy.
+'''
+def get_proxy_max_coord(proxy):
+    if len(proxy) == 3:
+        return np.array([proxy[0] + proxy[1], proxy[0] + proxy[2]])
+    else:
+        return np.array([proxy[0] / 2. + proxy[2], proxy[1] / 2. + proxy[3]])
+
+'''
 Triangulates a proxy.
 '''
 def get_proxy_mesh(proxy, edgesize = .5):
     proxypoints = get_minimal_proxy_points(proxy)
     vs, fs = dmsh.generate(dmsh.Polygon(proxypoints), edgesize)
     return vs, fs
+
+
+'''
+Returns the min coordinate of a proxy.
+'''
+def get_proxy_min_coord(proxy):
+    if len(proxy) == 3:
+        return np.array([-proxy[0] + proxy[1], -proxy[0] + proxy[2]])
+    else:
+        return np.array([-proxy[0] / 2. + proxy[2], -proxy[1] / 2. + proxy[3]])
+
+
+def get_proxy_sdf(proxy):
+    if len(proxy) == 3:
+        proxysdf = csg.translate(csg.sphere(proxy[0]), np.array([proxy[1], proxy[2]]))
+    else:
+        R = np.array([[np.cos(proxy[4]), -np.sin(proxy[4])],
+                      [np.sin(proxy[4]), np.cos(proxy[4])]])
+        proxysdf = csg.translate(csg.rotate(csg.box(proxy[0]/2., proxy[1]/2.), R.T), np.array([proxy[2], proxy[3]]))    
+    return proxysdf
 
 '''
 Returns true if the point p2 is left of the edge spanned by p0 and p1.
@@ -116,6 +239,27 @@ def jarvis_march(S):
                 endPoint = S[j]
         pointOnHull = endPoint
     return np.append(P, [P[0]], axis=0)
+
+'''
+Refines a polygon to have maximum edgelength L.
+'''
+def refinePoly(poly, l):
+    polynew = []
+    for i in range(poly.shape[0]-1):
+        a = poly[i,:]
+        b = poly[i+1,:]
+        L = np.linalg.norm(a - b)
+        if l < L:
+            N = int(np.ceil(L / l))
+            if len(polynew) == 0:
+                polynew = np.array(np.linspace(a, b, N))
+            else:
+                polynew = np.append(polynew, np.linspace(a, b, N)[1:], axis=0)
+        else:
+            if len(polynew) == 0:
+                polynew = np.array([a]) 
+            polynew = np.append(polynew, np.array([b]), axis=0)
+    return polynew
 
 '''
 An implementation of the Sutherland-Hodgman algorithm (https://en.wikipedia.org/wiki/Sutherland%E2%80%93Hodgman_algorithm)
@@ -156,6 +300,40 @@ def sutherland_hodgman_clipping_tri(clipTri, targetTri):
 
     return np.unique(np.array(resultPolygon), axis=0)
 
+'''
+Turns a proxy into a polygon.
+'''
+def unpack_proxy(proxy):
+    if len(proxy) == 3:
+        r = proxy[0]
+        cx = proxy[1]
+        cy = proxy[2]
+
+        circumference = 2 * np.pi
+
+        th = np.array([[t for t in np.arange(0, circumference, 0.05)]])
+        th = th.T
+
+        pcircle = np.array([cx, cy]) + r * np.hstack((np.cos(th), np.sin(th)))
+        return pcircle
+    else:
+        sx = proxy[0]
+        sy = proxy[1]
+        cx = proxy[2]
+        cy = proxy[3]
+        theta = proxy[4]
+
+        pbox = np.array([[-0.5, -0.5], [-0.5,0.5], [0.5, 0.5], [0.5, -0.5], [-0.5,-0.5]])
+
+        S = np.diag([sx, sy])
+        R = np.array([[np.cos(theta), -np.sin(theta)],
+                      [np.sin(theta), np.cos(theta)]])
+
+        pbox = np.dot(np.dot(pbox, S), R) + np.array([cx, cy])
+
+        pbox = refinePoly(pbox, 0.25)
+
+        return pbox
 
 '''
 Method for updating a triangle mesh withot having to re-triangulate.
