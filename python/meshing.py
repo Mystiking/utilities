@@ -1,6 +1,6 @@
 import numpy as np
-import utilities.python.polygons
-
+from scipy.spatial import Delaunay
+import utilities.python.polygons as polygons
 
 '''
 Early-out AABB intersection testing in arbitrary dimension.
@@ -34,7 +34,8 @@ def compute_intersection_polygon(vs0, vs1, fs0, fs1):
         if newpolygonpoints.shape[0] > 2:
             polygonpoints = np.append(polygonpoints, newpolygonpoints, axis=0)
     # 3) Perform a Jarvis march to get the convex hull
-    polygonpoints = polygons.jarvis_march(polygonpoints[:, :-1])
+    if len(polygonpoints) != 0:    
+        polygonpoints = polygons.jarvis_march(polygonpoints[:, :-1])
     return polygonpoints
 
 '''
@@ -80,6 +81,21 @@ def compute_intervals(vp0, vp1, vp2, dv0, dv1, dv2, dv0dv1, dv0dv2):
     else:
         return None
 
+def compute_mesh_area(vs, fs):
+    A = 0.0
+    for f in fs:
+        t = [vs[f[0]], vs[f[1]], vs[f[2]]]
+        A += compute_triangle_area(t)
+    return A
+
+'''
+Computes the area of a triangle using the cross product.
+'''
+def compute_triangle_area(tri):
+    AB = tri[1] - tri[0]
+    AC = tri[2] - tri[0]
+    return np.linalg.norm(np.cross(AB, AC)) / 2.
+
 '''
 Performs a coplanarity test between two triangles.
 '''
@@ -114,6 +130,135 @@ def coplanar_tri_tri(N, v0, v1, v2, u0, u1, u2):
     if point_in_tri(u0, v0, v1, v2, i0, i1):
         return True
     return False
+
+
+
+def intersection2d(polymesh, proxymesh, polytarget, proxypoly):
+    zero_padded_polyvs = np.zeros((polymesh[0].shape[0], 3))
+    zero_padded_polyvs[:, :-1] = polymesh[0][:, :2]
+    zero_padded_proxyvs = np.zeros((proxymesh[0].shape[0], 3))
+    zero_padded_proxyvs[:, :-1] = proxymesh[0][:, :2]
+    intersecting_triangles = mesh_mesh_intersection_aabbs(zero_padded_polyvs,
+                                                          zero_padded_proxyvs,
+                                                          polymesh[1],
+                                                          proxymesh[1])
+    intersection_points = np.empty((0, 3))
+    # All points inside
+    for itri in intersecting_triangles:
+        for p in itri[0]:
+            if polygons.is_inside(proxypoly, p):
+                intersection_points = np.append(intersection_points, [p], axis=0)
+        for p in itri[1]:
+            if polygons.is_inside(polytarget, p):
+                intersection_points = np.append(intersection_points, [p], axis=0)
+    # All points intersecting the two
+    vertices = np.array(get_unique_vertices(intersection_points))
+    tris = Delaunay(vertices, qhull_options='QJ')
+    return vertices, tris.simplices.copy()
+
+
+'''
+Computes the mesh corresponding to polymesh `minus` proxymesh
+'''
+def difference(polymesh, proxymesh, proxypoly):
+    zero_padded_polyvs = np.zeros((polymesh[0].shape[0], 3))
+    zero_padded_polyvs[:, :-1] = polymesh[0][:, :2]
+    zero_padded_proxyvs = np.zeros((proxymesh[0].shape[0], 3))
+    zero_padded_proxyvs[:, :-1] = proxymesh[0][:, :2]
+    polytriangles = np.array([[zero_padded_polyvs[i] for i in f] for f in polymesh[1]])
+    intersecting_triangles = mesh_mesh_intersection_aabbs(zero_padded_polyvs,
+                                                                  zero_padded_proxyvs,
+                                                                  polymesh[1],
+                                                                  proxymesh[1])
+    polyintersectingtriangles = np.array([itri[0] for itri in intersecting_triangles])
+    proxyintersectingtriangles = np.array([itri[1] for itri in intersecting_triangles])
+    # Triangles in polymesh that aren't affected by the proxymesh
+    diff = np.empty((0, 3, 3))
+    for tri in polytriangles:
+        add_triangle = True
+        for itri in intersecting_triangles:
+            if all([all([tri[i][j] == itri[0][i][j] for j in range(len(tri[i]))]) for i in range(len(tri))]):
+                add_triangle = False
+                break
+        if add_triangle:
+            diff = np.append(diff, [tri], axis=0)
+    # Triangles that need to be fixed, due to an intersection with the polymesh
+    for itri in intersecting_triangles:
+        if not (all([polygons.is_inside(proxypoly, q) for q in itri[0]])):
+            # Triangles that are not completely contained inside the proxy polygon
+            corrected_points = polygons.compute_triangle_polygon_intersection_points(itri[0][:, :-1], proxypoly[:-2])
+            for p in itri[0]:
+                if not polygons.is_inside(proxypoly, p):
+                    corrected_points = np.append(corrected_points, [p], axis=0)
+            if corrected_points.shape[0] > 2:
+                corrected_points = polygons.jarvis_march(corrected_points[:, :-1])
+                try:
+                    tris = Delaunay(corrected_points)
+                    zero_padded_corrected_points = np.zeros((corrected_points.shape[0], 3))
+                    zero_padded_corrected_points[:, :-1] = corrected_points
+                    for f in tris.simplices.copy():
+                        diff = np.append(diff, [[zero_padded_corrected_points[i] for i in f]], axis=0)
+                except:
+                    continue
+    return reconstruct_mesh(diff) if diff.shape[0] > 0 else diff
+
+
+def is_tri_in_list(tri, tris):
+    for t in tris:
+        if (all(t[0] == tri[0]) and all(t[1] == tri[1]) and all(t[2] == tri[2])) or\
+           (all(t[0] == tri[0]) and all(t[2] == tri[1]) and all(t[1] == tri[2])) or \
+           (all(t[1] == tri[0]) and all(t[0] == tri[1]) and all(t[2] == tri[2])) or \
+           (all(t[1] == tri[0]) and all(t[2] == tri[1]) and all(t[0] == tri[2])) or \
+           (all(t[2] == tri[0]) and all(t[0] == tri[1]) and all(t[1] == tri[2])) or \
+           (all(t[2] == tri[0]) and all(t[1] == tri[1]) and all(t[0] == tri[2])):
+           return True
+    return False
+
+
+def union(polymesh, proxymesh, polytarget, proxypoly):
+    zero_padded_polyvs = np.zeros((polymesh[0].shape[0], 3))
+    zero_padded_polyvs[:, :-1] = polymesh[0][:, :2]
+    zero_padded_proxyvs = np.zeros((proxymesh[0].shape[0], 3))
+    zero_padded_proxyvs[:, :-1] = proxymesh[0][:, :2]
+    polytriangles = np.array([[zero_padded_polyvs[i] for i in f] for f in polymesh[1]])
+    proxytriangles = np.array([[zero_padded_proxyvs[i] for i in f] for f in proxymesh[1]])
+    intersecting_triangles = mesh_mesh_intersection_aabbs(zero_padded_polyvs,
+                                                          zero_padded_proxyvs,
+                                                          polymesh[1],
+                                                          proxymesh[1])
+    polyintersectingtriangles = np.array([itri[0] for itri in intersecting_triangles])
+    proxyintersectingtriangles = np.array([itri[1] for itri in intersecting_triangles])
+    result_tris = np.empty((0, 3, 3))
+    # All tris in poly which are not in the proxy
+    for tri in polytriangles:
+        #if all([not polygons.is_inside(proxypoly, q) for q in tri]) and not is_tri_in_list(tri, polyintersectingtriangles):
+        result_tris = np.append(result_tris, [tri], axis=0)
+        '''
+        if any([not polygons.is_inside(proxypoly, q) for q in tri]) or is_tri_in_list(tri, polyintersectingtriangles):
+            corrected_points = polygons.compute_triangle_polygon_intersection_points(tri[:, :-1], proxypoly[:-2])
+            for p in tri:
+                if not polygons.is_inside(proxypoly, p):
+                    corrected_points = np.append(corrected_points, [p], axis=0)
+            if corrected_points.shape[0] > 2:
+                corrected_points = polygons.jarvis_march(corrected_points[:, :-1])
+                try:
+                    tris = Delaunay(corrected_points)
+                    zero_padded_corrected_points = np.zeros((corrected_points.shape[0], 3))
+                    zero_padded_corrected_points[:, :-1] = corrected_points
+                    for f in tris.simplices.copy():
+                        result_tris = np.append(result_tris, [[zero_padded_corrected_points[i] for i in f]], axis=0)
+                        #pass
+                except:
+                    continue
+        '''
+    diffmesh = difference(proxymesh, polymesh, np.flip(polytarget, 0))
+    if len(diffmesh) > 0:
+        for f in diffmesh[1]:
+            result_tris = np.append(result_tris, [[diffmesh[0][f[0]], diffmesh[0][f[1]], diffmesh[0][f[2]]]], axis=0)
+
+
+
+    return reconstruct_mesh(result_tris) if result_tris.shape[0] > 0 else result_tris
 
 '''
 Returns true if any edge of triangle (v0, v1, v2) intersects and edge of triangle (u0, u1, u2),
@@ -251,6 +396,46 @@ def fast_triangle_triangle_intersection_test(T1, T2):
     return True
 
 '''
+Returns the unique triangles from a set of triangles.
+'''
+def get_unique_triangles(tris):
+    unique_tris = [tris[0]]
+    for tri in tris[1:]:
+        unique = True
+        for t in unique_tris:
+            if (all(t[0] == tri[0]) and all(t[1] == tri[1]) and all(t[2] == tri[2])) or\
+               (all(t[0] == tri[0]) and all(t[2] == tri[1]) and all(t[1] == tri[2])) or \
+               (all(t[1] == tri[0]) and all(t[0] == tri[1]) and all(t[2] == tri[2])) or \
+               (all(t[1] == tri[0]) and all(t[2] == tri[1]) and all(t[0] == tri[2])) or \
+               (all(t[2] == tri[0]) and all(t[0] == tri[1]) and all(t[1] == tri[2])) or \
+               (all(t[2] == tri[0]) and all(t[1] == tri[1]) and all(t[0] == tri[2])):
+                unique = False
+                break
+        if unique:
+            unique_tris.append(tri)
+    return unique_tris
+
+'''
+Returns the unique triangles from a set of vertices.
+'''
+def get_unique_vertices(vertices):
+    unique_vertices = [vertices[0]]
+    for v in vertices[1:]:
+        unique = True
+        for uv in unique_vertices:
+            if (uv[0] == v[0] and uv[1] == v[1] and uv[2] == v[2]) or\
+               (uv[0] == v[0] and uv[2] == v[1] and uv[1] == v[2]) or \
+               (uv[1] == v[0] and uv[0] == v[1] and uv[2] == v[2]) or \
+               (uv[1] == v[0] and uv[2] == v[1] and uv[0] == v[2]) or \
+               (uv[2] == v[0] and uv[0] == v[1] and uv[1] == v[2]) or \
+               (uv[2] == v[0] and uv[1] == v[1] and uv[0] == v[2]):
+                unique = False
+                break
+        if unique:
+            unique_vertices.append(v)
+    return unique_vertices
+
+'''
 Naive way to reduce intersection tests required using AABB's.
 This is particularly helpful in the 2D setting, where we would otherwise need to perform
 the most expensive test (co-planarity) a bunch of time.
@@ -285,6 +470,30 @@ def mesh_mesh_intersection_brute_force(vs0, vs1, fs0, fs1):
             if fast_triangle_triangle_intersection_test(t0, t1):
                 intersections = np.append(intersections, [[t0, t1]], axis=0)
     return intersections
+
+'''
+Order a list of triangles - i.e. (N x 3) matrix - into a mesh of vertices and faces.
+'''
+def reconstruct_mesh(tris):
+    tris = np.array(get_unique_triangles(tris))
+    vertices = np.empty((0, 3))
+    faces = np.empty((tris.shape[0], 3))
+    
+    for f, tri in enumerate(tris):
+        for i, v in enumerate(tri):
+            new = True
+            for j, w in enumerate(vertices):
+                # v has been seen before
+                if all([v[k] == w[k] for k in range(len(v))]):
+                    faces[f, i] = j
+                    new = False
+                    break
+            # If we get here, then v is a new vertex
+            if new:
+                vertices = np.append(vertices, [v], axis=0)
+                faces[f, i] = vertices.shape[0] - 1
+            
+    return vertices, np.array(faces, dtype=np.int32)
 
 '''
 Returns true if the point v0 is located inside triangle (u0, u1, u2), projected to

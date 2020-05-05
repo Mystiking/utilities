@@ -40,7 +40,7 @@ class Grid:
                 nodes[row_idx,:] = coord
         return nodes
 
-    def set_phi(self, poly, sdf=polygons.sdf):
+    def set_phi(self, poly, sdf=lambda p, c: polygons.sdf(p, c)):
         self.phi = np.zeros( (self.I*self.J), dtype=np.float64) 
         for j in range(self.J):
             y = self.min_coord[1] + self.spacing[1] * j

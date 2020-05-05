@@ -1,6 +1,6 @@
 import numpy as np
 import dmsh
-import utilities.python.meshing
+import utilities.python.meshing as meshing
 import utilities.python.csg2d as csg
 
 '''
@@ -73,6 +73,18 @@ def compute_random_points(proxy, num_samples=1e3):
 
 
 '''
+Computes the points of intersection between a triangle and a polygon.
+'''
+def compute_triangle_polygon_intersection_points(tri, polygon):
+    intersection_points = np.empty((0, 3))
+    for i in range(len(tri)):
+        for j in range(len(polygon)):
+            intersection, intersectingPoint = find_intersection_point(tri[i], tri[i-1], polygon[j], polygon[j-1])
+            if intersection and not intersectingPoint is None:
+                intersection_points = np.append(intersection_points, [[intersectingPoint[0], intersectingPoint[1] , 0.]], axis=0)
+    return intersection_points
+
+'''
 Computes uniformly spaced points within a proxy.
 '''
 def compute_uniformly_sampled_points(proxy, min_coord, max_coord, spacing = .5, grid_points = None ):
@@ -111,6 +123,7 @@ def compute_uniformly_sampled_points(proxy, min_coord, max_coord, spacing = .5, 
                       [np.sin(theta), np.cos(theta)]])
         return np.dot(points - np.array([proxy[2], proxy[3]]), R) + np.array([proxy[2], proxy[3]])
 
+
 '''
 Finds the intersection point between lines (p1, p2) and (u1, u2).
 Returns (bool, point), where the boolean indicates if there was an intersection or not.
@@ -126,6 +139,7 @@ def find_intersection_point(p1, p2, u1, u2):
     if e1xe2 == 0 and upxe1 == 0:        
         if (0 <= np.dot(u1 - p1, e1) and np.dot(u1 - p1, e1) <= np.dot(e1, e1)) or\
            (0 <= np.dot(u1 - p1, e2) and np.dot(u1 - p1, e2) <= np.dot(e2, e2)):
+           #out = np.mean([np.mean([p1, p2], axis=0), np.mean([u1, u2], axis=0)], axis=0)
            return True, out
         return False, out
     # Test if parallel
@@ -142,6 +156,241 @@ def find_intersection_point(p1, p2, u1, u2):
     # Otherwise the line segments doesn't intersect
     return False, out
 
+
+
+
+def is_between(a,c,b):
+    def distance(a,b):
+        return np.sqrt((a[0] - b[0])**2 + (a[1] - b[1])**2)
+    return distance(a,c) + distance(c,b) == distance(a,b)
+
+def get_collinear_intersection(p1, p2, u1, u2):
+    collinear_intersection = np.empty((0, 2))
+    if (u1[0] <= p1[0] and p1[1] <= u1[1]) and (u2[0] <= p1[0] and p1[1] <= u2[1]):
+        collinear_intersection = np.append(collinear_intersection, [p1], axis=0)
+    if (u1[0] <= p2[0] and p2[1] <= u1[1]) and (u2[0] <= p2[0] and p2[1] <= u2[1]):
+        collinear_intersection = np.append(collinear_intersection, [p2], axis=0)
+    if (p1[0] <= u1[0] and u1[1] <= p1[1]) and (p2[0] <= u1[0] and u1[1] <= p2[1]):
+        collinear_intersection = np.append(collinear_intersection, [u2], axis=0)
+    if (p1[0] <= u2[0] and u2[1] <= p1[1]) and (p2[0] <= u2[0] and u2[1] <= p2[1]):
+        collinear_intersection = np.append(collinear_intersection, [u2], axis=0)
+    return np.unique(collinear_intersection, axis=0) if collinear_intersection.shape[0] > 0 else collinear_intersection
+
+def intersection(p1, p2):
+    p = np.empty((0, 2))
+
+    # Test if one polygon is contained within the other
+    intersection_points = []
+    for i in range(p1.shape[0]):
+        for j in range(p2.shape[0]):
+
+            inter, interp = find_intersection_point(p1[i], p1[i-1], p2[j], p2[j-1])
+            if inter and not (interp is None):
+                intersection_points.append(interp)
+
+    if len(intersection_points) == 0:
+        if is_inside(p1, p2[0]):
+            return p2
+        elif is_inside(p2, p1[0]):
+            return p1
+        else:
+            return np.empty((0, 2))
+
+    most_left = [p1[0]]
+    for i in range(1, len(p1)):
+        if most_left[0][0] > p1[i][0]:
+            most_left[0] = p1[i]
+        elif most_left[0][0] == p1[i][0]:
+            most_left.append(p1[i])
+    
+    starting_point = most_left[np.argsort(np.array(most_left)[:, 1])[0]]
+    index = list(map(lambda x: list(x), p1)).index(list(starting_point))
+    polygon = 0
+    polygons = [p1, p2]
+
+    a = polygons[polygon][index % polygons[polygon].shape[0]]
+    b = polygons[polygon][(index + 1) % polygons[polygon].shape[0]]
+
+    while p.shape[0] < 3 or any(np.abs(p[0] - p[-1]) > 1e-5):
+        #print(p)
+        if is_inside(polygons[1 - polygon], a, 1e-3):
+            p = np.append(p, [a], axis=0)
+            if is_inside(polygons[1 - polygon], b, tol=1e-3):
+                index += 1
+                a = polygons[polygon][index % polygons[polygon].shape[0]]
+                b = polygons[polygon][(index + 1) % polygons[polygon].shape[0]]
+                #print("11", a, b)
+            else:
+                # Otherwise, we need to get the closest intersection point
+                intersection_points = []
+                for i in range(polygons[1 - polygon].shape[0]):
+                    inter, interp = find_intersection_point(a, b, polygons[1 - polygon][i], polygons[1 - polygon][i-1])
+                    if inter and not interp is None:
+                        intersection_points.append(interp)
+                    elif inter and interp is None:
+                        collinear_intersection_points = get_collinear_intersection(a, b, polygons[1 - polygon][i], polygons[1 - polygon][i-1])
+                        for q in collinear_intersection_points:
+                            intersection_points.append(q)
+                distances = [np.linalg.norm(q - a) for q in intersection_points]
+                if len(distances) == 0:
+                    closest_intersection_point = a
+                else:
+                    closest_intersection_point = intersection_points[np.argsort(distances)[0]]
+                index = np.argsort([np.linalg.norm(q - closest_intersection_point) for q in polygons[1 - polygon]])[0]
+                
+                if is_between(polygons[1 - polygon][index], closest_intersection_point, polygons[1 - polygon][(index + 1) % polygons[1 - polygon].shape[0]]):
+                    index = (index + 1) % polygons[1 - polygon].shape[0]
+                p = np.append(p, [closest_intersection_point], axis=0)
+                
+                a = polygons[1 - polygon][index]
+                b = polygons[1 - polygon][(index + 1) % polygons[1 - polygon].shape[0]]
+
+                polygon = 1 - polygon
+                #print("10", a, b)
+        else:
+            
+            if is_inside(polygons[1 - polygon], b, 1e-3):
+                intersection_points = []
+                for i in range(polygons[1 - polygon].shape[0]):
+                    inter, interp = find_intersection_point(a, b, polygons[1 - polygon][i], polygons[1 - polygon][i-1])
+                    if inter and not interp is None:
+                        intersection_points.append(interp)
+                    elif inter and interp is None:
+                        collinear_intersection_points = get_collinear_intersection(a, b, polygons[1 - polygon][i], polygons[1 - polygon][i-1])
+                        for q in collinear_intersection_points:
+                            intersection_points.append(q)
+                distances = [np.linalg.norm(q - a) for q in intersection_points]
+                closest_intersection_point = intersection_points[np.argsort(distances)[0]]
+
+                a = closest_intersection_point
+                #print("01", a, b)
+            else:
+                intersection_points = []
+                for i in range(polygons[1 - polygon].shape[0]):
+                    inter, interp = find_intersection_point(a, b, polygons[1 - polygon][i], polygons[1 - polygon][i-1])
+                    if inter and not (interp is None):
+                        intersection_points.append(interp)
+                    elif inter and (interp is None):
+                        collinear_intersection_points = get_collinear_intersection(a, b, polygons[1 - polygon][i], polygons[1 - polygon][i-1])
+                        for q in collinear_intersection_points:
+                            intersection_points.append(q)
+                if len(intersection_points) == 0:
+                    index += 1
+                    a = polygons[polygon][index % polygons[polygon].shape[0]]
+                    b = polygons[polygon][(index + 1) % polygons[polygon].shape[0]]
+                    if all(a == b):
+                        b = polygons[polygon][(index + 2) % polygons[polygon].shape[0]]
+                else:
+                    distances = [np.linalg.norm(q - a) for q in intersection_points]
+                    closest_intersection_point = intersection_points[np.argsort(distances)[0]]
+
+
+                    index = np.argsort([np.linalg.norm(q - closest_intersection_point) for q in polygons[polygon]])[0]
+                    index = (index + 1) % polygons[polygon].shape[0]
+                    a = closest_intersection_point
+                    b = polygons[polygon][index]
+                #print("00", a, b)
+    return p
+
+def union(p1, p2):
+    p = np.empty((0, 2))
+
+    # Test if one polygon is contained within the other
+    intersection_points = []
+    for i in range(p1.shape[0]):
+        for j in range(p2.shape[0]):
+
+            inter, interp = find_intersection_point(p1[i], p1[i-1], p2[j], p2[j-1])
+            if inter and not (interp is None):
+                intersection_points.append(interp)
+
+    if len(intersection_points) == 0:
+        if is_inside(p1, p2[0]):
+            return p1
+        elif is_inside(p2, p1[0]):
+            return p2
+        else:
+            return np.append(p1, p2, axis=0)
+
+    most_left = [p1[0]]
+    for i in range(1, len(p1)):
+        if most_left[0][0] > p1[i][0]:
+            most_left[0] = p1[i]
+        elif most_left[0][0] == p1[i][0]:
+            most_left.append(p1[i])
+    
+    starting_point = most_left[np.argsort(np.array(most_left)[:, 1])[0]]
+    index = list(map(lambda x: list(x), p1)).index(list(starting_point))
+    polygon = 0
+    polygons = [p1, p2]
+
+    a = polygons[polygon][index % polygons[polygon].shape[0]]
+    b = polygons[polygon][(index + 1) % polygons[polygon].shape[0]]
+
+    while p.shape[0] < 3 or any(np.abs(p[0] - p[-1]) > 1e-5):
+
+        if is_inside(polygons[1 - polygon], a):
+            if is_inside(polygons[1 - polygon], b):
+                index = (index + 1) % polygons[polygon].shape[0]
+                a = polygons[polygon][index % polygons[polygon].shape[0]]
+                b = polygons[polygon][(index + 1) % polygons[polygon].shape[0]]
+                #print("11", a, b)
+            else:
+                intersection_points = []
+                for i in range(polygons[1 - polygon].shape[0]):
+                    inter, interp = find_intersection_point(a, b, polygons[1 - polygon][i], polygons[1 - polygon][i-1])
+                    if inter and not (interp is None):
+                        intersection_points.append(interp)
+                    elif inter and (interp is None):
+                        collinear_intersection_points = get_collinear_intersection(a, b, polygons[1 - polygon][i], polygons[1 - polygon][i-1])
+                        for q in collinear_intersection_points:
+                            intersection_points.append(q)
+
+                distances = [np.linalg.norm(q - a) for q in intersection_points]
+                closest_intersection_point = intersection_points[np.argsort(distances)[0]]
+                p = np.append(p, [closest_intersection_point], axis=0)
+                index = np.argsort([np.linalg.norm(q - closest_intersection_point) for q in polygons[polygon]])[0]
+                index = (index + 1) % polygons[polygon].shape[0]
+                if is_between(polygons[polygon][index], closest_intersection_point, polygons[polygon][(index + 1) % polygons[polygon].shape[0]]):
+                    index = (index + 1) % polygons[polygon].shape[0]
+                a = polygons[polygon][index]
+                b = polygons[polygon][(index + 1) % polygons[polygon].shape[0]]
+                #print("10", a, b)
+        else:
+            p = np.append(p, [a], axis=0)
+            intersection_points = []
+            for i in range(polygons[1 - polygon].shape[0]):
+                inter, interp = find_intersection_point(a, b, polygons[1 - polygon][i], polygons[1 - polygon][i-1])
+                if inter and not (interp is None):
+                    intersection_points.append(interp)
+                elif inter and (interp is None):
+                    collinear_intersection_points = get_collinear_intersection(a, b, polygons[1 - polygon][i], polygons[1 - polygon][i-1])
+                    for q in collinear_intersection_points:
+                        intersection_points.append(q)
+            if len(intersection_points) == 0:
+                index = (index + 1) % polygons[polygon].shape[0]
+                a = polygons[polygon][index % polygons[polygon].shape[0]]
+                b = polygons[polygon][(index + 1) % polygons[polygon].shape[0]]
+                #print("00", a, b)
+            else:
+                distances = [np.linalg.norm(q - a) for q in intersection_points]
+                closest_intersection_point = intersection_points[np.argsort(distances)[0]]
+
+                index = np.argsort([np.linalg.norm(q - closest_intersection_point) for q in polygons[1 - polygon]])[0]
+                index = (index) % polygons[1 - polygon].shape[0]
+                if is_between(polygons[1 - polygon][index], closest_intersection_point, polygons[1 - polygon][(index + 1) % polygons[1 - polygon].shape[0]]):
+                    index = (index + 1) % polygons[1 - polygon].shape[0]
+
+                a = polygons[1 - polygon][index]                
+                b = polygons[1 - polygon][(index + 1) % polygons[1 - polygon].shape[0]]
+                polygon = 1 - polygon
+
+                p = np.append(p, [closest_intersection_point], axis=0)
+                #print("01", a, b)
+            
+                
+                
+    return p
 
 '''
 Gets the minimum amount of points (to some degree) needed to perform a triangulation of the surface.
@@ -212,6 +461,11 @@ Returns true if the point p2 is left of the edge spanned by p0 and p1.
 def is_left(p0, p1, p2):
     return (p1[0] - p0[0]) * (p2[1] - p0[1]) - (p2[0] - p0[0]) * (p1[1] - p0[1]) > 0.0
 
+'''
+Return true if a point lies within a polygon, and false otherwise.
+'''
+def is_inside(polygon, point, tol=0.0):
+    return sdf(polygon, point) <= tol
 
 '''
 2D-implementation of the Jarvis-March algorithm (1973) (otherwise known as the "Gift-Wrapping" algorithm).
@@ -240,6 +494,34 @@ def jarvis_march(S):
                 endPoint = S[j]
         pointOnHull = endPoint
     return np.append(P, [P[0]], axis=0)
+
+'''
+Samples a polygon (2D) uniformly along its surface.
+'''
+def reduce_polygon_complexity(polygon, edgelength = 1.0):
+    N = polygon.shape[0]
+    p = polygon[0]
+    sampled_points = np.empty((0, 2))
+    sampled_points = np.append(sampled_points, [p], axis=0)
+
+    d = 0.0
+    direction = None
+    for i in range(1, N):
+        if direction is None:
+            direction = (polygon[i] - p) / np.linalg.norm(polygon[i] - p)
+        else:
+            new_direction = (polygon[i] - p) / np.linalg.norm(polygon[i] - p)
+            if np.sum(np.abs(direction - new_direction)) > 1e-5 and np.linalg.norm(polygon[i] - p) > edgelength: # This is the same direction    
+                sampled_points = np.append(sampled_points, [polygon[i-1]], axis=0)
+                p = polygon[i-1]
+                direction = (polygon[i] - p) / np.linalg.norm(polygon[i] - p)
+            #else:
+            #    d = np.linalg.norm(p - polygon[i-1])
+            #    if d >= edgelength:
+            #        sampled_points = np.append(sampled_points, [polygon[i-1]], axis=0)    
+            #        p = polygon[i-1]
+
+    return np.append(sampled_points, [sampled_points[0]], axis=0)
 
 '''
 Refines a polygon to have maximum edgelength L.
@@ -352,12 +634,12 @@ def sutherland_hodgman_clipping_tri(clipTri, targetTri):
             if intersection:
                 resultPolygon.append(intersectingPoint)
 
-    return np.unique(np.array(resultPolygon), axis=0)
+    return np.unique(np.array(resultPolygon), axis=0) if len(resultPolygon) != 0 else np.empty((0, 3))
 
 '''
 Turns a proxy into a polygon.
 '''
-def unpack_proxy(proxy):
+def unpack_proxy(proxy, max_edge_length=0.25):
     if len(proxy) == 3:
         r = proxy[0]
         cx = proxy[1]
@@ -365,7 +647,7 @@ def unpack_proxy(proxy):
 
         circumference = 2 * np.pi
 
-        th = np.array([[t for t in np.arange(0, circumference, 0.05)]])
+        th = np.array([[t for t in np.arange(0, -circumference, -0.05)]])
         th = th.T
 
         pcircle = np.array([cx, cy]) + r * np.hstack((np.cos(th), np.sin(th)))
@@ -385,7 +667,7 @@ def unpack_proxy(proxy):
 
         pbox = np.dot(np.dot(pbox, S), R) + np.array([cx, cy])
 
-        pbox = refinePoly(pbox, 0.25)
+        pbox = refinePoly(pbox, max_edge_length)
 
         return pbox
 
