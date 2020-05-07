@@ -527,10 +527,10 @@ def reduce_polygon_complexity(polygon, edgelength = 1.0):
 Refines a polygon to have maximum edgelength L.
 '''
 def refinePoly(poly, l):
-    polynew = []
+    polynew = np.empty((0, 2))
     for i in range(poly.shape[0]-1):
-        a = poly[i,:]
-        b = poly[i+1,:]
+        a = np.array(poly[i,:])
+        b = np.array(poly[i+1,:])
         L = np.linalg.norm(a - b)
         if l < L:
             N = int(np.ceil(L / l))
